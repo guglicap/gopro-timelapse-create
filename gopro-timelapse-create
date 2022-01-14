@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+
+# DEFAULTS
+IMAGE_DIR="$(pwd)"
+OUT_FILE="timelapse.mp4"
+FFMPEG_OPTS="-c:v libx264 -preset slow -pix_fmt yuv420p"
+DRY_RUN=0
+
+setup() {
+    POSITIONAL_ARGS=()
+
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+        -h | --help)
+            usage
+            exit 0
+            shift 2
+            ;;
+        -n | --dry-run)
+            DRY_RUN=1
+            shift
+            ;;
+        -sn | --start-number)
+            START_NUMBER="$2"
+            shift 2
+            ;;
+        --scale)
+            FFMPEG_OPTS+=" -vf scale=$2"
+            shift 2
+            ;;
+        --ffmpeg-options)
+            FFMPEG_OPTS="$2"
+            shift 2
+            ;;
+        --ffmpeg-options-append)
+            FFMPEG_OPTS+=" $2"
+            shift 2
+            ;;
+        -*)
+            echo "unknown option $1"
+            usage
+            exit 1
+            ;;
+        *)
+            POSITIONAL_ARGS+=("$1") # save positional arg
+            shift
+            ;;
+        esac
+    done
+
+    set -- "${POSITIONAL_ARGS[@]}" # restore positional parameters
+
+    [[ -n "$1" ]] && {
+        IMAGE_DIR="$1"
+    }
+    [[ -r "${IMAGE_DIR}" ]] || {
+        printf "cannot read image directory: %s\n" "${IMAGE_DIR}"
+        exit 1
+    }
+    [[ -n "$2" ]] && OUT_FILE="$2"
+}
+
+usage() {
+    printf "%s\n" "\
+    Usage: gopro-timelapse-create [options] [image-dir] [out-file]
+    Generate timelapse video from GoPro images. image-dir defaults to current directory if not specified.
+    
+    Options:
+        -h, --help: show this message.
+        -n, --dry-run: do nothing, print out the commands which would be invoked instead.
+
+        -sn, --start-number <start_number>: number of the first image which should be part of the video. defaults to the first one in alphabetical order.
+
+        --scale <w:h>: scale the frames to width w and height h. can also be relative, e.g. '--scale iw*.5:ih*.5'. refer to https://trac.ffmpeg.org/wiki/Scaling for further details.
+        --ffmpeg-options <options>: set ffmpeg encode options. refer to ffmpeg documentation.
+        --ffmpeg-options-append: append these options to the default ffmpeg options.
+            default options: ${FFMPEG_OPTS}
+    "
+}
+
+main() {
+    first_image="$(find "${IMAGE_DIR}" -maxdepth 1 -name "*.JPG" | sort | head -n1)"
+    [[ -z "${first_image}" ]] && {
+        printf "cannot find any images in dir %s. exiting\n" "${IMAGE_DIR}"
+        exit 2
+    }
+    # this is actually the first image number and is used to compute the file format for ffmpeg input
+    # might not actually be used if START_NUMBER is specified
+    start_number="$(grep -Eo '[[:digit:]]+' <<<"${first_image}")"
+    n_digits="$(wc -m <<<"${start_number}")"
+    n_digits=$((n_digits - 1)) # hate wc
+
+    # CHECK FFMPEG EXISTS
+    type -p ffmpeg &>/dev/null || {
+        printf "ffmpeg not installed and required\n"
+        exit 1
+    }
+
+    # if user specified start number use that
+    [[ -z "$START_NUMBER" ]] || start_number="${START_NUMBER}"
+
+    # shellcheck disable=SC2001
+    ffmpeg_input="$(sed "s/[[:digit:]]\{${n_digits}\}/%0${n_digits}d/g" <<<"${first_image}")"
+
+    [[ ${DRY_RUN} -eq 1 ]] && {
+        # shellcheck disable=SC2086
+        echo ffmpeg -start_number "${start_number}" -i "${ffmpeg_input}" ${FFMPEG_OPTS} "${OUT_FILE}"
+        return
+    }
+    # shellcheck disable=SC2086
+    ffmpeg -start_number "${start_number}" -i "${ffmpeg_input}" ${FFMPEG_OPTS} "${OUT_FILE}"
+}
+
+setup "$@"
+main
